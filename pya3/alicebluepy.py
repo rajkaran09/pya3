@@ -1,4 +1,5 @@
 import requests
+from requests.adapters import HTTPAdapter
 import json
 import hashlib
 import enum
@@ -17,6 +18,17 @@ import threading
 logger = logging.getLogger(__name__)
 
 Instrument = namedtuple('Instrument', ['exchange', 'token', 'symbol', 'name', 'expiry', 'lot_size'])
+
+# --- Custom adapter for binding to a specific IP ---
+class SourceIPAdapter(HTTPAdapter):
+    def __init__(self, source_ip=None, *args, **kwargs):
+        self.source_ip = source_ip
+        super().__init__(*args, **kwargs)
+
+    def init_poolmanager(self, *args, **kwargs):
+        if self.source_ip:
+            kwargs["source_address"] = (self.source_ip, 0)
+        return super().init_poolmanager(*args, **kwargs)
 
 
 class TransactionType(enum.Enum):
@@ -163,10 +175,10 @@ class Aliceblue:
         url = self.base + self._sub_urls[sub_url]
         return self._request(url, "GET", data=data)
 
-    def _post(self, sub_url, data=None):
+    def _post(self, sub_url, data=None, PRIVATE_IP: str = None):
         """Post method declaration"""
         url = self.base + self._sub_urls[sub_url]
-        return self._request(url, "POST", data=data)
+        return self._request(url, "POST", data=data, PRIVATE_IP=PRIVATE_IP)
 
     def _dummypost(self, url, data=None):
         """Post method declaration"""
@@ -185,37 +197,79 @@ class Aliceblue:
 
     """Common request to call POST and GET method"""
 
-    def _request(self, method, req_type, data=None):
-        """
-        Headers with authorization. For some requests authorization
-        is not required. It will be send as empty String
-        """
-        _headers = {
-            "X-SAS-Version": "2.0",
-            "User-Agent": self._user_agent(),
-            "Authorization": self._user_authorization()
-        }
+def _request(self, method, req_type, data=None, PRIVATE_IP: str = None):
+    """
+    Sends GET/POST with optional source IP binding.
+    """
+
+    # Build headers
+    _headers = {
+        "X-SAS-Version": "2.0",
+        "User-Agent": self._user_agent(),
+        "Authorization": self._user_authorization()
+    }
+
+    # Create a session so we can attach the IP-binding adapter
+    session = requests.Session()
+
+    # If PRIVATE_IP provided → mount adapter so all requests use it
+    if PRIVATE_IP:
+        adapter = SourceIPAdapter(PRIVATE_IP)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+    try:
         if req_type == "POST":
-            try:
-                response = requests.post(method, json=data, headers=_headers, )
-            except (requests.ConnectionError, requests.Timeout) as exception:
-                return {'stat': 'Not_ok', 'emsg': exception, 'encKey': None}
-            if response.status_code == 200:
-                return json.loads(response.text)
-            else:
-                emsg = str(response.status_code) + ' - ' + response.reason
-                return {'stat': 'Not_ok', 'emsg': emsg, 'encKey': None}
+            response = session.post(method, json=data, headers=_headers)
 
         elif req_type == "GET":
-            try:
-                response = requests.get(method, json=data, headers=_headers)
-            except (requests.ConnectionError, requests.Timeout) as exception:
-                return {'stat': 'Not_ok', 'emsg': exception, 'encKey': None}
-            if response.status_code == 200:
-                return json.loads(response.text)
-            else:
-                emsg = str(response.status_code) + ' - ' + response.reason
-                return {'stat': 'Not_ok', 'emsg': emsg, 'encKey': None}
+            response = session.get(method, json=data, headers=_headers)
+
+        else:
+            return {"stat": "Not_ok", "emsg": "Invalid req_type", "encKey": None}
+
+    except (requests.ConnectionError, requests.Timeout) as exception:
+        return {"stat": "Not_ok", "emsg": str(exception), "encKey": None}
+
+    # Handle response
+    if response.status_code == 200:
+        return json.loads(response.text)
+    else:
+        emsg = f"{response.status_code} - {response.reason}"
+        return {"stat": "Not_ok", "emsg": emsg, "encKey": None}
+
+
+    # def _request(self, method, req_type, data=None, PRIVATE_IP: str = None):
+    #     """
+    #     Headers with authorization. For some requests authorization
+    #     is not required. It will be send as empty String
+    #     """
+    #     _headers = {
+    #         "X-SAS-Version": "2.0",
+    #         "User-Agent": self._user_agent(),
+    #         "Authorization": self._user_authorization()
+    #     }
+    #     if req_type == "POST":
+    #         try:
+    #             response = requests.post(method, json=data, headers=_headers, )
+    #         except (requests.ConnectionError, requests.Timeout) as exception:
+    #             return {'stat': 'Not_ok', 'emsg': exception, 'encKey': None}
+    #         if response.status_code == 200:
+    #             return json.loads(response.text)
+    #         else:
+    #             emsg = str(response.status_code) + ' - ' + response.reason
+    #             return {'stat': 'Not_ok', 'emsg': emsg, 'encKey': None}
+
+    #     elif req_type == "GET":
+    #         try:
+    #             response = requests.get(method, json=data, headers=_headers)
+    #         except (requests.ConnectionError, requests.Timeout) as exception:
+    #             return {'stat': 'Not_ok', 'emsg': exception, 'encKey': None}
+    #         if response.status_code == 200:
+    #             return json.loads(response.text)
+    #         else:
+    #             emsg = str(response.status_code) + ' - ' + response.reason
+    #             return {'stat': 'Not_ok', 'emsg': emsg, 'encKey': None}
 
     def _error_response(self, message):
         return {"stat": "Not_ok", "emsg": message}
@@ -346,7 +400,8 @@ class Aliceblue:
                     stop_loss=None, square_off=None, trailing_sl=None,
                     is_amo=False,
                     order_tag=None,
-                    is_ioc=False):
+                    is_ioc=False,
+                    PRIVATE_IP: str = None):
         if transaction_type is None:
             raise TypeError("Required parameter transaction_type not of type TransactionType")
 
@@ -410,7 +465,7 @@ class Aliceblue:
                  "trigPrice": trigPrice,
                  "orderTag": order_tag}]
         # print(data)
-        placeorderresp = self._post("placeorder", data)
+        placeorderresp = self._post("placeorder", data, PRIVATE_IP)
         if len(placeorderresp) == 1:
             return placeorderresp[0]
         else:
