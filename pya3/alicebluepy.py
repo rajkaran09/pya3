@@ -165,6 +165,7 @@ class Aliceblue:
         self.disable_ssl = disable_ssl
         self.session_id = session_id
         self.base = base or self.base_url
+        self.private_id = None
         self.__on_error = None
         self.__on_disconnect = None
         self.__on_open = None
@@ -175,10 +176,10 @@ class Aliceblue:
         url = self.base + self._sub_urls[sub_url]
         return self._request(url, "GET", data=data)
 
-    def _post(self, sub_url, data=None, PRIVATE_IP: str = None):
+    def _post(self, sub_url, data=None):
         """Post method declaration"""
         url = self.base + self._sub_urls[sub_url]
-        return self._request(url, "POST", data=data, PRIVATE_IP=PRIVATE_IP)
+        return self._request(url, "POST", data=data)
 
     def _dummypost(self, url, data=None):
         """Post method declaration"""
@@ -197,7 +198,7 @@ class Aliceblue:
 
     """Common request to call POST and GET method"""
 
-    def _request(self, method, req_type, data=None, PRIVATE_IP: str = None):
+    def _request(self, method, req_type, data=None):
         """
         Sends GET/POST with optional source IP binding.
         """
@@ -213,8 +214,8 @@ class Aliceblue:
         session = requests.Session()
 
         # If PRIVATE_IP provided → mount adapter so all requests use it
-        if PRIVATE_IP:
-            adapter = SourceIPAdapter(PRIVATE_IP)
+        if self.private_id:
+            adapter = SourceIPAdapter(self.private_id)
             session.mount("http://", adapter)
             session.mount("https://", adapter)
 
@@ -233,7 +234,7 @@ class Aliceblue:
 
         # Handle response
         if response.status_code == 200:
-            print("Posted request with ip", PRIVATE_IP)
+            # print("Posted request with ip", self)
             return json.loads(response.text)
         else:
             emsg = f"{response.status_code} - {response.reason}"
@@ -401,8 +402,7 @@ class Aliceblue:
                     stop_loss=None, square_off=None, trailing_sl=None,
                     is_amo=False,
                     order_tag=None,
-                    is_ioc=False,
-                    private_ip: str = None):
+                    is_ioc=False):
         if transaction_type is None:
             raise TypeError("Required parameter transaction_type not of type TransactionType")
 
@@ -466,7 +466,7 @@ class Aliceblue:
                  "trigPrice": trigPrice,
                  "orderTag": order_tag}]
         # print(data)
-        placeorderresp = self._post("placeorder", data, PRIVATE_IP=private_ip)
+        placeorderresp = self._post("placeorder", data)
         if len(placeorderresp) == 1:
             return placeorderresp[0]
         else:
