@@ -165,7 +165,7 @@ class Aliceblue:
         self.disable_ssl = disable_ssl
         self.session_id = session_id
         self.base = base or self.base_url
-        self.private_id = None
+        self.static_ip = None
         self.__on_error = None
         self.__on_disconnect = None
         self.__on_open = None
@@ -214,8 +214,8 @@ class Aliceblue:
         session = requests.Session()
 
         # If PRIVATE_IP provided → mount adapter so all requests use it
-        if self.private_id:
-            adapter = SourceIPAdapter(self.private_id)
+        if self.static_ip:
+            adapter = SourceIPAdapter(self.static_ip)
             session.mount("http://", adapter)
             session.mount("https://", adapter)
 
