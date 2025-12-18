@@ -19,16 +19,63 @@ logger = logging.getLogger(__name__)
 
 Instrument = namedtuple('Instrument', ['exchange', 'token', 'symbol', 'name', 'expiry', 'lot_size'])
 
-# --- Custom adapter for binding to a specific IP ---
-class SourceIPAdapter(HTTPAdapter):
-    def __init__(self, source_ip=None, *args, **kwargs):
-        self.source_ip = source_ip
-        super().__init__(*args, **kwargs)
+def send_via_proxy(
+    method,
+    url,
+    source_private_ip,
+    query_params=None,   # dict for GET params
+    json_body=None,      # for json=
+    data_body=None,      # for data=
+    headers=None,
+    timeout=30,
+    allow_redirects=True,
+    verify_ssl=True,
+    proxy_url=None
+):
+    proxy_url = proxy_url  # or host.internal:5000
 
-    def init_poolmanager(self, *args, **kwargs):
-        if self.source_ip:
-            kwargs["source_address"] = (self.source_ip, 0)
-        return super().init_poolmanager(*args, **kwargs)
+    payload = {
+        'method': method.upper(),
+        'url': url,
+        'source_ip': source_private_ip,
+        'headers': headers or {},
+        'params': query_params or {},        # GET query params
+        'json': json_body,                   # if you use json=
+        'data': data_body,                   # if you use data=
+        'timeout': timeout,
+        'allow_redirects': allow_redirects,
+        'verify_ssl': verify_ssl
+    }
+
+    proxy_resp = requests.post(proxy_url, json=payload)
+
+    if proxy_resp.status_code != 200:
+        try:
+            error_detail = proxy_resp.json()
+        except:
+            error_detail = proxy_resp.text
+        raise Exception(f"Proxy failed ({proxy_resp.status_code}): {error_detail}")
+
+    result = proxy_resp.json()
+
+    if 'error' in result:
+        raise Exception(f"Request failed: {result['error']}")
+
+    # Mimic a requests.Response object as much as possible
+    class FakeResponse:
+        def __init__(self, data):
+            self.status_code = data['status_code']
+            self.headers = data['headers']
+            self.text = data['text']
+            self.content = data['content'].encode('utf-8')
+            self._json = data.get('json')
+
+        def json(self):
+            if self._json is None:
+                raise ValueError("Response is not JSON")
+            return self._json
+
+    return FakeResponse(result)
 
 
 class TransactionType(enum.Enum):
@@ -158,14 +205,17 @@ class Aliceblue:
                  api_key,
                  base=None,
                  session_id=None,
-                 disable_ssl=False):
+                 disable_ssl=False,
+                 static_ip: str = None,
+                 proxy_url: str = None):
 
         self.user_id = user_id.upper()
         self.api_key = api_key
         self.disable_ssl = disable_ssl
         self.session_id = session_id
         self.base = base or self.base_url
-        self.static_ip = None
+        self.static_ip = static_ip
+        self.proxy_url = proxy_url
         self.__on_error = None
         self.__on_disconnect = None
         self.__on_open = None
@@ -199,9 +249,6 @@ class Aliceblue:
     """Common request to call POST and GET method"""
 
     def _request(self, method, req_type, data=None):
-        """
-        Sends GET/POST with optional source IP binding.
-        """
 
         # Build headers
         _headers = {
@@ -211,23 +258,33 @@ class Aliceblue:
         }
 
         # Create a session so we can attach the IP-binding adapter
-        session = requests.Session()
-
-        # If PRIVATE_IP provided → mount adapter so all requests use it
-        if self.static_ip:
-            adapter = SourceIPAdapter(self.static_ip)
-            session.mount("http://", adapter)
-            session.mount("https://", adapter)
+        # session = requests.Session()     
 
         try:
-            if req_type == "POST":
-                response = session.post(method, json=data, headers=_headers)
+            # if req_type == "POST":
+            #     response = session.post(method, json=data, headers=_headers)
 
-            elif req_type == "GET":
-                response = session.get(method, json=data, headers=_headers)
+            # elif req_type == "GET":
+            #     response = session.get(method, json=data, headers=_headers)
 
-            else:
-                return {"stat": "Not_ok", "emsg": "Invalid req_type", "encKey": None}
+            # else:
+            #     return {"stat": "Not_ok", "emsg": "Invalid req_type", "encKey": None}
+            
+            query_params = data if req_type == "GET" else None
+            json_body = data if req_type == "POST" else None
+
+            response = send_via_proxy(
+                method=req_type.upper(),           # "POST" or "GET"
+                url=method,                        # method param is actually the full URL
+                source_private_ip=self.static_ip,  # ← add self.source_ip to your class (your chosen private IP)
+                query_params=query_params,
+                json_body=json_body,
+                headers=_headers,
+                timeout=30,
+                verify_ssl=True,
+                proxy_url=self.proxy_url
+            )
+
 
         except (requests.ConnectionError, requests.Timeout) as exception:
             return {"stat": "Not_ok", "emsg": str(exception), "encKey": None}
